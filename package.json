@@ -1,0 +1,42 @@
+{
+  "name": "mta-send",
+  "version": "1.0.0",
+  "description": "Send an email message like an MTA would.",
+  "main": "main.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "prepare": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/gene-hightower/node-mta-send.git"
+  },
+  "keywords": [
+    "MTA",
+    "SMTP",
+    "RFC-5321"
+  ],
+  "author": "Gene Hightower <gene@digilicious.com> (https://digilicious.com/)",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/gene-hightower/node-mta-send/issues"
+  },
+  "homepage": "https://github.com/gene-hightower/node-mta-send#readme",
+  "devDependencies": {
+    "@types/jest": "^27.0.2",
+    "@types/node": "^16.11.7",
+    "@types/nodemailer": "^6.4.4",
+    "jest": "^27.3.1",
+    "ts-jest": "^27.0.7",
+    "typescript": "^4.4.4"
+  },
+  "dependencies": {
+    "cast-error": "^0.0.7",
+    "is-ip": "^3.1.0",
+    "lodash": "^4.17.21",
+    "nodemailer": "^6.7.0",
+    "pify": "^5.0.0",
+    "smtp-address-parser": "^1.0.7"
+  }
+}
