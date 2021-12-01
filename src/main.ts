@@ -177,7 +177,7 @@ export async function sendMessage(
         const host = mxRecord.exchange;
 
         const connection = new SMTPConnection({
-            port: 225,
+            port: 25,
             host: host,
             name: name,
             secure: false, // connect in plain-text
