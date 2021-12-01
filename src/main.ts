@@ -3,6 +3,7 @@
 const SMTPConnection = require("nodemailer/lib/smtp-connection");
 const _ = require("lodash");
 const dns = require("dns");
+const isIp = require("is-ip");
 const pify = require("pify");
 const smtpAddressParser = require("smtp-address-parser");
 
@@ -33,41 +34,107 @@ function wrapErrorEvent(target: EventEmitter, other: () => Promise<any>, logger:
 }
 
 /**
- * Returns the ordered list of Mail eXchangers for a domain, including
- * an implicit record if no others found in DNS.
+ * Returns an RFC-5321 section 5.1. "implicit MX" record if the domain
+ * has any address records.
  */
-async function getMXs(domain: string) {
+async function implicitMX(domain: string) {
     try {
-        const mx = await dns.promises.resolveMx(domain);
-        return _.sortBy(mx, ["priority", Math.random]);
-    } catch (err_mx: any) {
-        if (instanceOfNodeError(err_mx, Error)) {
-            if (err_mx.code === "ENODATA" || err_mx.code === "ENOTFOUND") {
-                try {
-                    await Promise.any([dns.promises.resolve4(domain), dns.promises.resolve6(domain)]);
-                    // RFC-5321 section 5.1. "implicit MX"
-                    return [{ priority: 0, exchange: domain }];
-                } catch (e_addr: any) {
-                    if (instanceOfNodeError(e_addr, Error)) {
-                        if (e_addr.code === "ENODATA" || e_addr.code === "ENOTFOUND") {
-                            // No 'A' or 'AAAA' record
-                            return [];
-                        }
-                    } else {
-                        throw e_addr; // anything else, including code==="ETIMEOUT"
-                    }
-                }
+        await Promise.any([dns.promises.resolve4(domain), dns.promises.resolve6(domain)]);
+        return [{ priority: 0, exchange: domain }];
+    } catch (err: any) {
+        if (instanceOfNodeError(err, Error)) {
+            if (err.code === "ENODATA" || err.code === "ENOTFOUND") {
+                return [];
             } else {
-                throw err_mx; // anything else, including code==="ETIMEOUT"
+                throw err; // anything else, including code==="ETIMEOUT"
             }
         } else {
-            throw err_mx; // throwing non Error should never happen
+            throw err; // throwing non Error, should never happen
         }
     }
 }
 
-export async function sendEmail(name: string, mailFrom: string, rcptTo: string, content: any, logger: any, tls: any) {
-    const from_parsed = smtpAddressParser.parse(mailFrom);
+/**
+ * Returns the ordered list of Mail eXchangers for a domain.
+ */
+async function getMXs(domain: string) {
+    try {
+        const mx = await dns.promises.resolveMx(domain);
+        if (mx.length === 0) {
+            return await implicitMX(domain);
+        }
+        return _.sortBy(mx, ["priority", Math.random]);
+    } catch (err: any) {
+        if (instanceOfNodeError(err, Error)) {
+            if (err.code === "ENODATA" || err.code === "ENOTFOUND") {
+                return await implicitMX(domain);
+            } else {
+                throw err; // anything else, including code==="ETIMEOUT", perhaps thrown from implicitMX
+            }
+        } else {
+            throw err; // throwing non Error, should never happen
+        }
+    }
+}
+
+export function addressFromLiteral(literal: string): string {
+    const m6 = literal.match(/\[IPv6:([^\]]*)\]/i);
+    if (m6) return m6[1];
+    const m4 = literal.match(/\[([^\]]*)\]/);
+    if (m4) return m4[1];
+    throw new Error(`${literal} is not an address literal`);
+}
+
+const ipv4re = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/;
+
+export function isLoopback(addr: string): boolean {
+    if (isIp.v4(addr)) {
+        const a = addr.match(ipv4re);
+
+        if (!a) throw new Error(`${addr} not a valid IPv4 address`);
+
+        return a[1] === "127";
+    }
+    if (isIp.v6(addr)) {
+        // FIXME, there are multiple ways to write ::1
+        return addr === "::1";
+    }
+    throw new Error(`${addr} is not an IP address`);
+}
+
+export function isPrivate(addr: string): boolean {
+    if (isIp.v4(addr)) {
+        const a = addr.match(ipv4re);
+
+        if (!a) throw new Error(`${addr} not a valid IPv4 address`);
+
+        if (a[1] == "10") return true;
+
+        if (a[1] == "172") {
+            const oct = Number(a[2]);
+            return 16 <= oct && oct <= 31;
+        }
+
+        return a[1] == "192" && a[2] == "168";
+    }
+    if (isIp.v6(addr)) {
+        // https://en.wikipedia.org/wiki/Private_network#Private_IPv6_addresses
+        return addr.toLowerCase().startsWith("fd");
+    }
+    throw new Error(`${addr} is not an IP address`);
+}
+
+type Content = string | Buffer | Uint8Array;
+
+export async function sendMessage(
+    name: string,
+    mailFrom: string,
+    rcptTo: string,
+    content: Content,
+    logger: any,
+    tls: any
+) {
+    const from_parsed = mailFrom !== "<>" ? smtpAddressParser.parse(mailFrom) : {};
     const to_parsed = smtpAddressParser.parse(rcptTo);
 
     const envelope = {
@@ -75,8 +142,19 @@ export async function sendEmail(name: string, mailFrom: string, rcptTo: string, 
         to: rcptTo,
     };
 
-    if (to_parsed.AddressLiteral) {
-        throw new Error("Domain is an address literal.");
+    if (to_parsed.domainPart.AddressLiteral) {
+        // FIXME, should allow this at some point.
+        var err: { [k: string]: any } = new Error("Domain is an address literal");
+        err.response = "Domain is an address literal";
+        err.responseCode = 500;
+        throw err;
+    }
+
+    if (to_parsed.domainPart.DomainName.split(".").length < 2) {
+        var err: { [k: string]: any } = new Error("Domain not fully qualified");
+        err.response = "Domain not fully qualified";
+        err.responseCode = 500;
+        throw err;
     }
 
     const mxRecords = await getMXs(to_parsed.domainPart.DomainName);
@@ -99,7 +177,7 @@ export async function sendEmail(name: string, mailFrom: string, rcptTo: string, 
         const host = mxRecord.exchange;
 
         const connection = new SMTPConnection({
-            port: 25,
+            port: 225,
             host: host,
             name: name,
             secure: false, // connect in plain-text
@@ -127,10 +205,13 @@ export async function sendEmail(name: string, mailFrom: string, rcptTo: string, 
             connection.quit();
             return result;
         } catch (e) {
-            logger.debug(`${JSON.stringify(e)}`);
+            logger.error(`${JSON.stringify(e)}`);
+            connection.quit();
+            var err: { [k: string]: any } = new Error("Delivery attempt failed");
+            err.response = "Delivery attempt failed";
+            err.responseCode = 500;
+            throw err;
         }
-
-        connection.quit();
     }
 
     throw new Error("Could not deliver message.");
